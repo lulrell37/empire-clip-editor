@@ -17,22 +17,44 @@ import os
 MODEL = "claude-sonnet-5"
 
 SYSTEM = """You are the planning pass of an automated clip editor. You get an edit \
-brief and a timestamped transcript of the source footage. Return ONLY a JSON object \
-with the cut and styling — no prose, no code fence.
+brief and a timestamped transcript of the source footage, and you call submit_plan \
+with the cut and styling.
 
-Keys:
-- keep: array of [start, end] second pairs into the SOURCE, in playback order. This \
-is the cut: drop dead air, filler, false starts, and anything off-brief. If the \
-whole thing should stay, return one pair spanning it.
-- aspect: "9:16" unless the brief clearly wants square or landscape.
-- captions: true unless the brief says no captions.
-- caption_style: "bottom" (default), "center", or "top".
-- music: the brief's music vibe as a short string, or null if none was asked for.
-- target_seconds: the brief's target length in seconds, or null.
-- notes: one short sentence for the strategist about what you did.
-
-Honor the brief's hook, keep/cut calls, and length. Keep cuts on clause \
+- keep: [start, end] second pairs into the SOURCE, in playback order. This is the \
+cut: drop dead air, filler, false starts, and anything off-brief. To keep the whole \
+thing, return one pair spanning it.
+- Honor the brief's hook, keep/cut calls, and target length. Put cuts on clause \
 boundaries using the word timings. Never invent footage."""
+
+PLAN_TOOL = {
+    "name": "submit_plan",
+    "description": "Submit the edit plan for this clip.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keep": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+                "description": "[start, end] second spans into the source, in playback order.",
+            },
+            "aspect": {"type": "string", "enum": ["9:16", "1:1", "16:9"]},
+            "captions": {"type": "boolean"},
+            "caption_style": {"type": "string", "enum": ["bottom", "center", "top"]},
+            "music": {
+                "type": ["string", "null"],
+                "description": "The brief's music vibe, or null if none was asked for.",
+            },
+            "target_seconds": {"type": ["number", "null"]},
+            "notes": {"type": "string", "description": "One short sentence on what you did."},
+        },
+        "required": ["keep", "aspect", "captions", "caption_style", "notes"],
+    },
+}
 
 
 def _default(duration):
@@ -102,18 +124,18 @@ def make(brief, transcript, duration):
             model=MODEL,
             max_tokens=2000,
             system=SYSTEM,
-            messages=[
-                {"role": "user", "content": user},
-                {"role": "assistant", "content": "{"},  # prefill: force a bare JSON object
-            ],
+            tools=[PLAN_TOOL],
+            tool_choice={"type": "tool", "name": "submit_plan"},
+            messages=[{"role": "user", "content": user}],
         )
-        raw = "".join(getattr(b, "text", "") or "" for b in resp.content).strip()
         print("planner stop_reason:", getattr(resp, "stop_reason", "?"))
-        print("planner raw:", repr(raw[:600]))
-
-        text = raw if raw.startswith("{") else "{" + raw
-        text = text[: text.rfind("}") + 1] if "}" in text else text
-        return _coerce(json.loads(text), duration)
+        call = next(
+            (b for b in resp.content if getattr(b, "type", "") == "tool_use"), None
+        )
+        if call is None:
+            raise RuntimeError(f"no tool_use in response: {resp.content!r}"[:300])
+        print("planner plan:", json.dumps(call.input)[:600])
+        return _coerce(call.input, duration)
     except Exception as e:  # planning is best-effort — never fail the job on it
         plan = _default(duration)
         plan["notes"] = f"Planning pass failed ({type(e).__name__}: {str(e)[:150]}); kept the full clip."
