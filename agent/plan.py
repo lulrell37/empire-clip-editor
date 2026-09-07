@@ -100,15 +100,21 @@ def make(brief, transcript, duration):
         )
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=1500,
+            max_tokens=2000,
             system=SYSTEM,
-            messages=[{"role": "user", "content": user}],
+            messages=[
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": "{"},  # prefill: force a bare JSON object
+            ],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-        if text.startswith("```"):
-            text = text.split("```", 2)[1].lstrip("json").strip()
+        raw = "".join(getattr(b, "text", "") or "" for b in resp.content).strip()
+        print("planner stop_reason:", getattr(resp, "stop_reason", "?"))
+        print("planner raw:", repr(raw[:600]))
+
+        text = raw if raw.startswith("{") else "{" + raw
+        text = text[: text.rfind("}") + 1] if "}" in text else text
         return _coerce(json.loads(text), duration)
     except Exception as e:  # planning is best-effort — never fail the job on it
         plan = _default(duration)
-        plan["notes"] = f"Planning pass failed ({str(e)[:120]}); kept the full clip."
+        plan["notes"] = f"Planning pass failed ({type(e).__name__}: {str(e)[:150]}); kept the full clip."
         return plan
