@@ -1,0 +1,79 @@
+name: R.O.G.U.E. clip retry
+
+# A clip-edit run that gets reclaimed out from under us — Azure spot-VM
+# preemption of the hosted runner, SIGTERM ~3-4 min in, before ffmpeg renders —
+# shows up as a cancelled/failed run that never posted a clip-result marker.
+# GitHub does not retry it, and nothing inside the dead job survives to retry
+# itself. This watches every "R.O.G.U.E. clip edit" run and re-kicks any open
+# rogue-clip issue that started but never finished, up to MAX_ATTEMPTS times.
+# Close+reopen is the retry handle: clip-edit.yml fires on `reopened`.
+on:
+  workflow_run:
+    workflows: ["R.O.G.U.E. clip edit"]
+    types: [completed]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: clip-retry
+  cancel-in-progress: false
+
+jobs:
+  requeue:
+    # A clean finish or a deliberate cancel needs nothing — only chase the
+    # runner-death conclusions.
+    if: >
+      github.event.workflow_run.conclusion == 'cancelled' ||
+      github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'timed_out'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-kick stalled clip jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          MAX_ATTEMPTS=3
+
+          issues="$(gh issue list --repo "$REPO" --label rogue-clip --state open \
+                      --json number --jq '.[].number')"
+          [ -n "$issues" ] || { echo "no open rogue-clip issues"; exit 0; }
+
+          for n in $issues; do
+            comments="$(gh issue view "$n" --repo "$REPO" --json comments \
+                          --jq '[.comments[].body] | join("\n---\n")')"
+
+            # Finished — a real result was posted.
+            if grep -q 'clip-result:' <<<"$comments"; then
+              echo "#$n has a result — leave it"
+              continue
+            fi
+
+            # A failure that is NOT a runner reclaim (a code bug, a dead link, a
+            # real timeout in the edit itself) won't be helped by retrying.
+            if grep 'clip-failed:' <<<"$comments" \
+                 | grep -qvi 'reclaim\|SIGTERM\|hosted-runner\|shutdown signal\|gave up'; then
+              echo "#$n failed for a non-reclaim reason — not retrying"
+              continue
+            fi
+
+            # Every started attempt posts exactly one 'clip-status: editing'.
+            attempts="$(grep -c 'clip-status: editing' <<<"$comments" || true)"
+            attempts="${attempts:-0}"
+
+            if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+              echo "#$n reclaimed $attempts runs in a row — giving up"
+              gh issue comment "$n" --repo "$REPO" --body \
+"<!-- clip-failed: gave up - the hosted runner was reclaimed $attempts runs in a row -->
+— R.O.G.U.E. · this clip keeps getting killed by GitHub runner reclaims ($attempts tries). Send it again in a bit. —"
+              gh issue close "$n" --repo "$REPO"
+              continue
+            fi
+
+            echo "#$n started $attempts time(s), no result — re-kicking (close/reopen)"
+            gh issue close "$n" --repo "$REPO"
+            sleep 5
+            gh issue reopen "$n" --repo "$REPO"
+          done
