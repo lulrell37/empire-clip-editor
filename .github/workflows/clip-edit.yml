@@ -1,0 +1,44 @@
+name: R.O.G.U.E. clip edit
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+
+# One run per issue; a later "labeled" event won't stomp a run in progress.
+concurrency:
+  group: clip-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # cut the clip-<n> release
+  issues: write     # comment the markers back
+
+jobs:
+  edit:
+    # Only act on the clip queue.
+    if: contains(join(github.event.issue.labels.*.name, ','), 'rogue-clip')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Python deps
+        run: pip install -r requirements.txt
+
+      - name: Edit clip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: python -m agent.run

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+work/
+*.mp4
+*.mkv
+*.webm
+*.wav
+*.srt
+!music/*.mp3
+!music/*.m4a
