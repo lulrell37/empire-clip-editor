@@ -4,9 +4,10 @@ name: R.O.G.U.E. clip retry
 # preemption of the hosted runner, SIGTERM ~3-4 min in, before ffmpeg renders —
 # shows up as a cancelled/failed run that never posted a clip-result marker.
 # GitHub does not retry it, and nothing inside the dead job survives to retry
-# itself. This watches every "R.O.G.U.E. clip edit" run and re-kicks any open
-# rogue-clip issue that started but never finished, up to MAX_ATTEMPTS times.
-# Close+reopen is the retry handle: clip-edit.yml fires on `reopened`.
+# itself. This watches every "R.O.G.U.E. clip edit" run and re-dispatches any
+# open rogue-clip issue that started but never finished, up to MAX_ATTEMPTS
+# times. It uses workflow_dispatch (not close/reopen) so the issue never flaps
+# state under the Empire OS poller.
 on:
   workflow_run:
     workflows: ["R.O.G.U.E. clip edit"]
@@ -14,6 +15,7 @@ on:
 
 permissions:
   issues: write
+  actions: write
 
 concurrency:
   group: clip-retry
@@ -29,7 +31,7 @@ jobs:
       github.event.workflow_run.conclusion == 'timed_out'
     runs-on: ubuntu-latest
     steps:
-      - name: Re-kick stalled clip jobs
+      - name: Re-dispatch stalled clip jobs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -51,10 +53,16 @@ jobs:
               continue
             fi
 
+            # Already gave up on this one.
+            if grep -qi 'clip-failed:.*gave up' <<<"$comments"; then
+              echo "#$n already gave up — leave it"
+              continue
+            fi
+
             # A failure that is NOT a runner reclaim (a code bug, a dead link, a
             # real timeout in the edit itself) won't be helped by retrying.
             if grep 'clip-failed:' <<<"$comments" \
-                 | grep -qvi 'reclaim\|SIGTERM\|hosted-runner\|shutdown signal\|gave up'; then
+                 | grep -qvi 'reclaim\|SIGTERM\|hosted-runner\|shutdown signal'; then
               echo "#$n failed for a non-reclaim reason — not retrying"
               continue
             fi
@@ -72,8 +80,6 @@ jobs:
               continue
             fi
 
-            echo "#$n started $attempts time(s), no result — re-kicking (close/reopen)"
-            gh issue close "$n" --repo "$REPO"
-            sleep 5
-            gh issue reopen "$n" --repo "$REPO"
+            echo "#$n started $attempts time(s), no result — re-dispatching"
+            gh workflow run clip-edit.yml --repo "$REPO" -f issue="$n"
           done
