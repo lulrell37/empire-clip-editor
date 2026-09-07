@@ -8,10 +8,16 @@ name: R.O.G.U.E. clip edit
 on:
   issues:
     types: [labeled, reopened]
+  # clip-retry.yml dispatches this when a run was reclaimed mid-edit.
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number to (re)run"
+        required: true
 
 # One run per issue; a second event won't stomp a run in progress.
 concurrency:
-  group: clip-${{ github.event.issue.number }}
+  group: clip-${{ github.event.issue.number || inputs.issue }}
   cancel-in-progress: false
 
 permissions:
@@ -23,6 +29,7 @@ jobs:
     # Act only when it's the clip-queue label going on (or a reopen of a job
     # that carries it) — not any other label change on any other issue.
     if: >
+      github.event_name == 'workflow_dispatch' ||
       (github.event.action == 'labeled' && github.event.label.name == 'rogue-clip') ||
       (github.event.action == 'reopened' && contains(join(github.event.issue.labels.*.name, ','), 'rogue-clip'))
     runs-on: ubuntu-latest
@@ -48,5 +55,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
         run: python -m agent.run
