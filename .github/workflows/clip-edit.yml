@@ -1,10 +1,15 @@
 name: R.O.G.U.E. clip edit
 
+# Empire OS files the issue with the `rogue-clip` label already attached, so a
+# single `labeled` event fires per job — trigger on that alone. (Also firing on
+# `opened` was the bug: an issue born with a label fires BOTH events, so every
+# job started two runs that then raced and confused each other.) `reopened` is
+# the retry handle: reopen a stuck or failed issue to run it again.
 on:
   issues:
-    types: [opened, labeled, reopened]
+    types: [labeled, reopened]
 
-# One run per issue; a later "labeled" event won't stomp a run in progress.
+# One run per issue; a second event won't stomp a run in progress.
 concurrency:
   group: clip-${{ github.event.issue.number }}
   cancel-in-progress: false
@@ -15,10 +20,13 @@ permissions:
 
 jobs:
   edit:
-    # Only act on the clip queue.
-    if: contains(join(github.event.issue.labels.*.name, ','), 'rogue-clip')
+    # Act only when it's the clip-queue label going on (or a reopen of a job
+    # that carries it) — not any other label change on any other issue.
+    if: >
+      (github.event.action == 'labeled' && github.event.label.name == 'rogue-clip') ||
+      (github.event.action == 'reopened' && contains(join(github.event.issue.labels.*.name, ','), 'rogue-clip'))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
