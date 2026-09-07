@@ -1,7 +1,8 @@
 """FFmpeg: cut to the plan, reframe, burn captions, optionally score with music."""
 import json
 import os
-import subprocess
+
+from agent import sh
 
 WORK = "work"
 SRT = os.path.join(WORK, "caps.srt")
@@ -11,10 +12,6 @@ OUT = os.path.join(WORK, "out.mp4")
 _DIMS = {"9:16": (1080, 1920), "1:1": (1080, 1080), "16:9": (1920, 1080)}
 _ALIGN = {"bottom": 2, "center": 5, "top": 8}
 _MARGIN = {"bottom": 90, "center": 40, "top": 90}
-
-
-def _run(cmd):
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 # --- captions -------------------------------------------------------------
@@ -148,7 +145,7 @@ def _cut_and_style(src, plan, has_audio, words):
         cmd += ["-an"]
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", CUT]
-    _run(cmd)
+    sh.run(cmd)
     return has_caps
 
 
@@ -162,7 +159,7 @@ def _add_music(track, has_audio):
         )
     else:
         fc = f"[1:a]volume={gain}dB[aout]"
-    _run([
+    sh.run([
         "ffmpeg", "-y", "-i", CUT, "-stream_loop", "-1", "-i", track["path"],
         "-filter_complex", fc,
         "-map", "0:v", "-map", "[aout]",

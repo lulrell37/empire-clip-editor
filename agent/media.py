@@ -1,8 +1,9 @@
 """Fetch the source clip from whatever kind of link the brief carried."""
 import os
 import re
-import subprocess
 import urllib.request
+
+from agent import sh
 
 WORK = "work"
 
@@ -11,10 +12,6 @@ _SOCIAL = re.compile(
     re.I,
 )
 _DRIVE = re.compile(r"drive\.google\.com|docs\.google\.com", re.I)
-
-
-def _run(cmd):
-    subprocess.run(cmd, check=True)
 
 
 def _drive_id(url):
@@ -40,7 +37,7 @@ def fetch(url):
 
     if _SOCIAL.search(url):
         out_tmpl = os.path.join(WORK, "source.%(ext)s")
-        _run([
+        sh.run([
             "yt-dlp",
             "-f", "bv*[height<=1920]+ba/b[height<=1920]/b",
             "--merge-output-format", "mp4",

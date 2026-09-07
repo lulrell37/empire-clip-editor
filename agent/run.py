@@ -67,7 +67,7 @@ def main():
     try:
         src = media.fetch(url)
         meta = probe.info(src)
-        tr = transcribe.run(src)
+        tr = transcribe.run(src) if meta["has_audio"] else transcribe.EMPTY
         plan = planner.make(brief, tr, meta["duration"])
         result = edit.render(src, plan, meta["has_audio"], tr["words"])
 

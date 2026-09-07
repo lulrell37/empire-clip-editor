@@ -1,30 +1,42 @@
 """Word-level transcript via faster-whisper."""
-import subprocess
+import os
+
+from agent import sh
 
 WAV = "work/audio.wav"
+EMPTY = {"text": "", "words": [], "segments": []}
 
 
 def _extract_audio(src):
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", WAV],
-        check=True, capture_output=True,
-    )
+    sh.run(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", WAV])
     return WAV
 
 
 def run(src):
-    """Return {'text': str, 'words': [{'word','start','end'}], 'segments': [...]}."""
-    from faster_whisper import WhisperModel
+    """Return {'text', 'words':[{word,start,end}], 'segments':[{start,end,text}]}.
 
-    _extract_audio(src)
-    model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(WAV, word_timestamps=True, vad_filter=True)
+    Returns EMPTY on any failure — a missing transcript costs captions, not the
+    whole edit.
+    """
+    try:
+        from faster_whisper import WhisperModel
 
-    words, segs, full = [], [], []
-    for seg in segments:
-        segs.append({"start": seg.start, "end": seg.end, "text": seg.text.strip()})
-        full.append(seg.text.strip())
-        for w in seg.words or []:
-            words.append({"word": w.word.strip(), "start": w.start, "end": w.end})
+        _extract_audio(src)
+        if not os.path.exists(WAV) or os.path.getsize(WAV) < 1024:
+            return EMPTY
 
-    return {"text": " ".join(full).strip(), "words": words, "segments": segs}
+        model = WhisperModel("base", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(WAV, word_timestamps=True, vad_filter=True)
+
+        words, segs, full = [], [], []
+        for seg in segments:
+            text = seg.text.strip()
+            segs.append({"start": seg.start, "end": seg.end, "text": text})
+            full.append(text)
+            for w in seg.words or []:
+                words.append({"word": w.word.strip(), "start": w.start, "end": w.end})
+
+        return {"text": " ".join(full).strip(), "words": words, "segments": segs}
+    except Exception as e:
+        print(f"transcription failed, continuing without captions: {e}")
+        return EMPTY

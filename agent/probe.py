@@ -1,16 +1,14 @@
 """ffprobe helpers."""
 import json
-import subprocess
+
+from agent import sh
 
 
 def info(path):
-    out = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-print_format", "json",
-            "-show_format", "-show_streams", path,
-        ],
-        check=True, capture_output=True, text=True,
-    ).stdout
+    out = sh.run([
+        "ffprobe", "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams", path,
+    ]).stdout
     data = json.loads(out)
     v = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
     a = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
