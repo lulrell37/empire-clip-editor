@@ -5,13 +5,28 @@ Env: REPO, ISSUE_NUMBER, GH_TOKEN, ANTHROPIC_API_KEY (optional).
 import json
 import os
 import re
+import signal
 import sys
 import traceback
 
 from agent import edit, github, media, plan as planner, probe, transcribe
 
 JOB_RE = re.compile(r"<!--\s*clip-job:\s*(\{.*?\})\s*-->", re.S)
-DONE_MARKERS = ("clip-status: editing", "clip-result:", "clip-failed:")
+
+# The ONLY marker that means "this job is finished, don't touch it again" is a
+# real result. A bare "clip-status: editing" is just a run that started — if that
+# run then dies (a hosted-runner reclaim, a timeout), a retry MUST be free to
+# pick the job back up. A "clip-failed" likewise doesn't block a fresh attempt:
+# reopening the issue is how you ask for another go.
+RESULT_MARKER = "clip-result:"
+
+
+class Interrupted(Exception):
+    """SIGTERM — the hosted runner is being reclaimed or the job timed out."""
+
+
+def _on_sigterm(_signum, _frame):
+    raise Interrupted("runner received SIGTERM (hosted-runner reclaim or job timeout)")
 
 
 def parse_job(body):
@@ -35,9 +50,11 @@ def parse_job(body):
     return url, brief
 
 
-def already_handled(number):
+def already_finished(number):
+    """True only if a previous run actually produced a clip (posted a
+    clip-result marker). Anything short of that is fair game to (re)run."""
     for c in github.list_comments(number):
-        if any(k in (c.get("body") or "") for k in DONE_MARKERS):
+        if RESULT_MARKER in (c.get("body") or ""):
             return True
     return False
 
@@ -47,19 +64,33 @@ def hms(seconds):
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def _fail(number, reason, tb=None):
+    reason = str(reason).replace("\n", " ")[:280]
+    body = f"<!-- clip-failed: {reason} -->\n— R.O.G.U.E. · clip edit failed: {reason} —"
+    if tb:
+        body += f"\n\n<details><summary>trace</summary>\n\n```\n{tb[-2500:]}\n```\n</details>"
+    else:
+        body += "\n\n_Reopen the issue to try again._"
+    try:
+        github.comment(number, body)
+    except Exception as post_err:  # nothing left to do but say so in the log
+        print(f"could not post failure marker: {post_err}", file=sys.stderr)
+
+
 def main():
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     number = int(os.environ["ISSUE_NUMBER"])
     issue = github.get_issue(number)
     issue_url = issue.get("html_url", "")
     url, brief = parse_job(issue.get("body", ""))
 
     if not url:
-        github.comment(number, "<!-- clip-failed: no media_url on the issue -->\n"
-                               "— R.O.G.U.E. · couldn't find a clip link on this job —")
+        _fail(number, "no media_url on the issue")
         sys.exit(1)
 
-    if already_handled(number):
-        print("already handled — nothing to do")
+    if already_finished(number):
+        print("already finished (clip-result present) — nothing to do")
         return
 
     github.comment(number, "<!-- clip-status: editing -->\n— R.O.G.U.E. · picked it up, cutting now —")
@@ -92,15 +123,16 @@ def main():
         )
         print("done:", download)
 
-    except Exception as e:
+    except Interrupted as e:
+        # Killed mid-edit. Leave a marker so nothing downstream waits forever,
+        # and exit non-zero so the run shows as failed.
+        print(f"interrupted: {e}", file=sys.stderr)
+        _fail(number, e)
+        sys.exit(1)
+    except BaseException as e:  # noqa: BLE001 — a run must ALWAYS leave a marker
         tb = traceback.format_exc()
         print(tb, file=sys.stderr)
-        reason = f"{type(e).__name__}: {e}".replace("\n", " ")[:280]
-        github.comment(
-            number,
-            f"<!-- clip-failed: {reason} -->\n— R.O.G.U.E. · clip edit failed: {reason} —\n\n"
-            f"<details><summary>trace</summary>\n\n```\n{tb[-2500:]}\n```\n</details>",
-        )
+        _fail(number, f"{type(e).__name__}: {e}", tb=tb)
         sys.exit(1)
 
 
